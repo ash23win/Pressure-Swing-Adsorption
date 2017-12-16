@@ -50,6 +50,8 @@ const PROCESS_INITIALCONC_B = 1-PROCESS_INITIALCONC_A; # Initial gas phase conce
 
 # MIXTURE PROPERTIES
 const GAS_SPECIFICHEATCAPACITY = 1010.6; # Specific heat capacity of the gas mixture [J/kg/K]
+const GAS_massTransferCoeff_A = 0.1; # Mass transfer coeffecient of component A [-]
+const GAS_massTransferCoeff_B = 0.1; # Mass transfer coeffecient of component B [-]
 
 # ADSORBENT PROPERTIES
 const ADSORBENT_DENSITY = 1130; # Density of the adsorbent [kg/m3]
@@ -75,8 +77,8 @@ const REFERENCE_PRESSURE = PROCESS_HIGHPRESSURE; # Reference pressure [Pa]
 const REFERENCE_TEMPERATURE = PROCESS_FEEDTEMPERATURE; # Reference temperature [K]
 
 # NON-DIMENSIONAL QUANTITIES
-const NONDIMENSIONAL_TIME = COLUMN_BEDLENGTH/PROCESS_FEEDVELOCITY; # Non-dimensional time
-
+const NONDIMENSIONAL_TIME = COLUMN_BEDLENGTH/PROCESS_FEEDVELOCITY; # Non-dimensional time [-]
+const NONDIMENSIONAL_DELZ = 1/NUMBER_OF_GRID_POINTS; # Length of the cell along spatial discretization [-]
 # ADSORBENT PROPERTIES
 # Component A
 qSat1_A = 4.390*ADSORBENT_DENSITY;
@@ -156,6 +158,34 @@ function evaluateLangmuir(materialIsotherm,currentConditions)
 	return equilibriumLoading_A, equilibriumLoading_B
 end
 
+function runAdsorption(mainArrayTemp)
+	nCount = 0;
+	velocityAdsorption = 1.0;
+
+	#while tAds<PROCESS_TIMEASDORPTION
+		# Initialize the variables needed for the loop to evaluate the solid equilibrium concentration at the current time step
+		nCount = nCount + 1;
+		isothermLoading_A = zeros(NUMBER_OF_GRID_POINTS,1);
+		isothermLoading_B = zeros(NUMBER_OF_GRID_POINTS,1);
+
+		# Run loop over the total number of grid points
+		for i in 1:NUMBER_OF_GRID_POINTS
+			# Get the current conditions
+			currentConditions = processConditions(mainArrayTemp[5*NUMBER_OF_GRID_POINTS+i,nCount]*REFERENCE_PRESSURE,mainArrayTemp[4*NUMBER_OF_GRID_POINTS+i,nCount]*REFERENCE_TEMPERATURE,mainArrayTemp[0*NUMBER_OF_GRID_POINTS+i,nCount]);
+
+			# Evaluate the equilibrium using the isotherm
+			(isothermLoading_A[i],isothermLoading_B[i]) = evaluateLangmuir(materialIsotherm,currentConditions);
+
+			# Evaluate the Linear Driving Force model for Component A
+			mainArrayTemp[1*NUMBER_OF_GRID_POINTS+i,nCount+1] = mainArrayTemp[1*NUMBER_OF_GRID_POINTS+i,nCount] + NONDIMENSIONAL_DELT*(GAS_massTransferCoeff_A*(isothermLoading_A[i] - mainArrayTemp[1*NUMBER_OF_GRID_POINTS+i,nCount]));
+
+			# Evaluate the Linear Driving Force model for Component B
+			mainArrayTemp[2*NUMBER_OF_GRID_POINTS+i,nCount+1] = mainArrayTemp[2*NUMBER_OF_GRID_POINTS+i,nCount] + NONDIMENSIONAL_DELT*(GAS_massTransferCoeff_B*(isothermLoading_B[i] - mainArrayTemp[2*NUMBER_OF_GRID_POINTS+i,nCount]));
+		end
+	#end
+	return mainArrayTemp
+end
+
 ###### MAIN FUNCTION ######
 ## INITIAL CONDITIONS FOR THE BED
 # Initialize main array as an empty array
@@ -181,6 +211,8 @@ mainArray[4*NUMBER_OF_GRID_POINTS+1:5*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_O
 
 # INITIALIZE THE COLUMN PRESSURE WITH THE FEED PRESSURE
 mainArray[5*NUMBER_OF_GRID_POINTS+1:6*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_HIGHPRESSURE/REFERENCE_PRESSURE;
+
+mainArray = runAdsorption(mainArray);
 
 toc()
 if flagPlotIsotherm
