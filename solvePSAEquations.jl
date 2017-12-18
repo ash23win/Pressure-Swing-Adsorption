@@ -1,14 +1,9 @@
-workspace();
+#workspace();
+using DifferentialEquations
+
 tic();
 
-flagPlotIsotherm = false; # Flag for plotting the isotherms
-
-# Structure for current conditions
-struct processConditions
-	currentPressure::Float64; # Current pressure [Pa]
-	currentTemperature::Float64; # Current temperature [K]
-	currentMoleFraction_A::Float64; # Current mole fraction of component A [-]
-end
+flagPlotIsotherm = true; # Flag for plotting the isotherms
 
 # Sturcture for isotherm properties
 struct langmuirIsotherm
@@ -48,10 +43,15 @@ const PROCESS_FEEDCONC_B = 1-PROCESS_FEEDCONC_A; # Feed concentration of compone
 const PROCESS_INITIALCONC_A = 0; # Initial gas phase concentration of component A [-]
 const PROCESS_INITIALCONC_B = 1-PROCESS_INITIALCONC_A; # Initial gas phase concentration of component A [-]
 
+# REFERENCE CONDITIONS
+const REFERENCE_PRESSURE = PROCESS_HIGHPRESSURE; # Reference pressure [Pa]
+const REFERENCE_TEMPERATURE = PROCESS_FEEDTEMPERATURE; # Reference temperature [K]
+
 # MIXTURE PROPERTIES
 const GAS_SPECIFICHEATCAPACITY = 1010.6; # Specific heat capacity of the gas mixture [J/kg/K]
 const GAS_massTransferCoeff_A = 0.1; # Mass transfer coeffecient of component A [-]
 const GAS_massTransferCoeff_B = 0.1; # Mass transfer coeffecient of component B [-]
+const GAS_MOLECULARDIFFUSIVITY = 1.2955e-5; #Molecular diffusivity of CO2-N2 mixture at 298.15K [m2/s]
 
 # ADSORBENT PROPERTIES
 const ADSORBENT_DENSITY = 1130; # Density of the adsorbent [kg/m3]
@@ -71,14 +71,14 @@ const COLUMN_INNERHEATCOEFFECIENT = 8.6; # Heat transfer coefficient inside the 
 const COLUMN_OUTERHEATCOEFFECIENT = 2.5; # Heat transfer coefficient outside the column [W/m2/K]
 const COLUMN_HEATCONDUCTIONCOEFFECIENT = 0.0903; # Effective heat conduction coeffecient [W/m/K]
 const COLUMN_SPECIFICHEATCAPACITY = 502; # Specific heat capacity of the column wall [J/kg/K]
-
-# REFERENCE CONDITIONS
-const REFERENCE_PRESSURE = PROCESS_HIGHPRESSURE; # Reference pressure [Pa]
-const REFERENCE_TEMPERATURE = PROCESS_FEEDTEMPERATURE; # Reference temperature [K]
+const COLUMN_AXIALDISPERSION = 0.7*(GAS_MOLECULARDIFFUSIVITY*REFERENCE_PRESSURE/PROCESS_HIGHPRESSURE) + 0.5*PROCESS_FEEDVELOCITY*(2.0*ADSORBENT_PARTICLERADIUS);
+const COLUMN_MACROPOREDIFFUSIVITY = GAS_MOLECULARDIFFUSIVITY/COLUMN_TORTUOSITY; # Macropore diffusivity [m2/s]
 
 # NON-DIMENSIONAL QUANTITIES
 const NONDIMENSIONAL_TIME = COLUMN_BEDLENGTH/PROCESS_FEEDVELOCITY; # Non-dimensional time [-]
 const NONDIMENSIONAL_DELZ = 1/NUMBER_OF_GRID_POINTS; # Length of the cell along spatial discretization [-]
+const NONDIMENSIONAL_PECLETMASS = PROCESS_FEEDVELOCITY*COLUMN_BEDLENGTH/COLUMN_AXIALDISPERSION; # Axial dispersion along the column
+
 # ADSORBENT PROPERTIES
 # Component A
 qSat1_A = 4.390*ADSORBENT_DENSITY;
@@ -121,34 +121,34 @@ delH_B = qSat1_B/qSat_REF*site1H_B + qSat2_B/qSat_REF*site2H_B;
 delH = [delH_A, delH_B];
 
 # Evaluate the Langmuir Isotherm either single or dual-site Langmuir
-function evaluateLangmuir(materialIsotherm,currentConditions)
+function evaluateLangmuir(materialIsotherm,currentPressure,currentTemperature,currentMoleFraction_A)
 	# Calculate the concetration for species A [mol/m3]
-	conc_A = currentConditions.currentPressure * currentConditions.currentMoleFraction_A / (UNIVERSAL_GAS_CONSTANT*currentConditions.currentTemperature);
+	conc_A = currentPressure * currentMoleFraction_A / (UNIVERSAL_GAS_CONSTANT*currentTemperature);
 
 	# Site 1 loading for component A [mol/m3]
 	# Adsorption coeffecient for site 1 for component A
-	bsite1_A = materialIsotherm.adsorptionCoeffecientSite1_A * exp(-materialIsotherm.internalEnergySite1_A/(UNIVERSAL_GAS_CONSTANT*currentConditions.currentTemperature));
+	bsite1_A = materialIsotherm.adsorptionCoeffecientSite1_A * exp(-materialIsotherm.internalEnergySite1_A/(UNIVERSAL_GAS_CONSTANT*currentTemperature));
 	qsite1_A = (materialIsotherm.qSaturationSite1_A * bsite1_A * conc_A) / (1 + bsite1_A * conc_A);
 
 	# Site 2 loading for component A [mol/m3]
 	# Adsorption coeffecient for site 2 for component A
-	bsite2_A = materialIsotherm.adsorptionCoeffecientSite2_A * exp(-materialIsotherm.internalEnergySite2_A/(UNIVERSAL_GAS_CONSTANT*currentConditions.currentTemperature));
+	bsite2_A = materialIsotherm.adsorptionCoeffecientSite2_A * exp(-materialIsotherm.internalEnergySite2_A/(UNIVERSAL_GAS_CONSTANT*currentTemperature));
 	qsite2_A = (materialIsotherm.qSaturationSite2_A * bsite2_A * conc_A) / (1 + bsite2_A * conc_A);
 
 	# Equilibrium loading for component A [mol/m3]
 	equilibriumLoading_A = qsite1_A + qsite2_A;
 
 	# Calculate the concetration for species B [mol/m3]
-	conc_B = currentConditions.currentPressure * (1 - currentConditions.currentMoleFraction_A) / (UNIVERSAL_GAS_CONSTANT*currentConditions.currentTemperature);
+	conc_B = currentPressure * (1 - currentMoleFraction_A) / (UNIVERSAL_GAS_CONSTANT*currentTemperature);
 
 	# Site 1 loading for component B [mol/m3]
 	# Adsorption coeffecient for site 1 for component B
-	bsite1_B = materialIsotherm.adsorptionCoeffecientSite1_B * exp(-materialIsotherm.internalEnergySite1_B/(UNIVERSAL_GAS_CONSTANT*currentConditions.currentTemperature));
+	bsite1_B = materialIsotherm.adsorptionCoeffecientSite1_B * exp(-materialIsotherm.internalEnergySite1_B/(UNIVERSAL_GAS_CONSTANT*currentTemperature));
 	qsite1_B = (materialIsotherm.qSaturationSite1_B * bsite1_B * conc_B) / (1 + bsite1_B * conc_B);
 
 	# Site 2 loading for component B [mol/m3]
 	# Adsorption coeffecient for site 2 for component B
-	bsite2_B = materialIsotherm.adsorptionCoeffecientSite2_B * exp(-materialIsotherm.internalEnergySite2_B/(UNIVERSAL_GAS_CONSTANT*currentConditions.currentTemperature));
+	bsite2_B = materialIsotherm.adsorptionCoeffecientSite2_B * exp(-materialIsotherm.internalEnergySite2_B/(UNIVERSAL_GAS_CONSTANT*currentTemperature));
 	qsite2_B = (materialIsotherm.qSaturationSite2_B * bsite2_B * conc_B) / (1 + bsite2_B * conc_B);
 
 	# Equilibrium loading for component B [mol/m3]
@@ -158,73 +158,75 @@ function evaluateLangmuir(materialIsotherm,currentConditions)
 	return equilibriumLoading_A, equilibriumLoading_B
 end
 
-function runAdsorption(mainArrayTemp)
+function runAdsorption(t,mainArrayTemp,mainArrayDerivative)
 	nCount = 0;
 	velocityAdsorption = 1.0;
+	NONDIMENSIONAL_DELT = 1;
+	# Evaluate the equilibrium using the isotherm
+	isothermLoadings = evaluateLangmuir.(materialIsotherm,mainArrayTemp[5*NUMBER_OF_GRID_POINTS+1:6*NUMBER_OF_GRID_POINTS]*REFERENCE_PRESSURE,mainArrayTemp[4*NUMBER_OF_GRID_POINTS+1:5*NUMBER_OF_GRID_POINTS]*REFERENCE_TEMPERATURE,mainArrayTemp[1:NUMBER_OF_GRID_POINTS]);
 
-	#while tAds<PROCESS_TIMEASDORPTION
-		# Initialize the variables needed for the loop to evaluate the solid equilibrium concentration at the current time step
-		nCount = nCount + 1;
-		isothermLoading_A = zeros(NUMBER_OF_GRID_POINTS,1);
-		isothermLoading_B = zeros(NUMBER_OF_GRID_POINTS,1);
+	isothermLoading_A = zeros(NUMBER_OF_GRID_POINTS);
+	isothermLoading_B = zeros(NUMBER_OF_GRID_POINTS);
 
-		# Run loop over the total number of grid points
-		for i in 1:NUMBER_OF_GRID_POINTS
-			# Get the current conditions
-			currentConditions = processConditions(mainArrayTemp[5*NUMBER_OF_GRID_POINTS+i,nCount]*REFERENCE_PRESSURE,mainArrayTemp[4*NUMBER_OF_GRID_POINTS+i,nCount]*REFERENCE_TEMPERATURE,mainArrayTemp[0*NUMBER_OF_GRID_POINTS+i,nCount]);
+	for i=1:length(isothermLoading_A)
+		isothermLoading_A[i] = isothermLoadings[i][1];
+		isothermLoading_B[i] = isothermLoadings[i][2];
+	end
 
-			# Evaluate the equilibrium using the isotherm
-			(isothermLoading_A[i],isothermLoading_B[i]) = evaluateLangmuir(materialIsotherm,currentConditions);
+	# Evaluate the Linear Driving Force model for Component A
+	mainArrayDerivative[1*NUMBER_OF_GRID_POINTS+1:2*NUMBER_OF_GRID_POINTS] = GAS_massTransferCoeff_A*(isothermLoading_A - mainArrayTemp[NUMBER_OF_GRID_POINTS+1:2*NUMBER_OF_GRID_POINTS]);
 
-			# Evaluate the Linear Driving Force model for Component A
-			mainArrayTemp[1*NUMBER_OF_GRID_POINTS+i,nCount+1] = mainArrayTemp[1*NUMBER_OF_GRID_POINTS+i,nCount] + NONDIMENSIONAL_DELT*(GAS_massTransferCoeff_A*(isothermLoading_A[i] - mainArrayTemp[1*NUMBER_OF_GRID_POINTS+i,nCount]));
-
-			# Evaluate the Linear Driving Force model for Component B
-			mainArrayTemp[2*NUMBER_OF_GRID_POINTS+i,nCount+1] = mainArrayTemp[2*NUMBER_OF_GRID_POINTS+i,nCount] + NONDIMENSIONAL_DELT*(GAS_massTransferCoeff_B*(isothermLoading_B[i] - mainArrayTemp[2*NUMBER_OF_GRID_POINTS+i,nCount]));
-		end
-	#end
-	return mainArrayTemp
+	# Evaluate the Linear Driving Force model for Component B
+	mainArrayDerivative[2*NUMBER_OF_GRID_POINTS+1:3*NUMBER_OF_GRID_POINTS] = GAS_massTransferCoeff_B*(isothermLoading_B - mainArrayTemp[2*NUMBER_OF_GRID_POINTS+1:3*NUMBER_OF_GRID_POINTS]);
+  #
+	# moleFraction_A_IN = (PROCESS_FEEDCONC_A*velocityAdsorption*NONDIMENSIONAL_PECLETMASS*NONDIMENSIONAL_DELZ/2 + mainArray[1,nCount])/(velocityAdsorption*NONDIMENSIONAL_PECLETMASS*NONDIMENSIONAL_DELZ/2);
 end
 
 ###### MAIN FUNCTION ######
 ## INITIAL CONDITIONS FOR THE BED
 # Initialize main array as an empty array
-mainArray = zeros(6*NUMBER_OF_GRID_POINTS,MEMORY_ALLOCATION_POINTS);
+mainArray = zeros(6*NUMBER_OF_GRID_POINTS,1);
 
 # COMPONENT A MOLE FRACTION IN GAS PHASE [1:NUMBER_OF_GRID_POINTS]
-mainArray[1:NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_FEEDCONC_A;
+mainArray[0*NUMBER_OF_GRID_POINTS+1:1*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_FEEDCONC_A;
 
 # INITIALIZE THE SOLID PHASE AT INITIAL CONDITIONS CONDITIONS
-currentConditions = processConditions(PROCESS_HIGHPRESSURE,PROCESS_FEEDTEMPERATURE,PROCESS_INITIALCONC_A);
 # Evaluate the Langmuir isotherm for the two components
-(isothermLoading_A,isothermLoading_B) = evaluateLangmuir(materialIsotherm,currentConditions);
+isothermLoadings = evaluateLangmuir(materialIsotherm,PROCESS_HIGHPRESSURE,PROCESS_FEEDTEMPERATURE,PROCESS_INITIALCONC_A);
+
 # Component A
-mainArray[1*NUMBER_OF_GRID_POINTS+1:2*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*isothermLoading_A;
+mainArray[1*NUMBER_OF_GRID_POINTS+1:2*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*isothermLoadings[1][1];
 # Component B
-mainArray[2*NUMBER_OF_GRID_POINTS+1:3*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*isothermLoading_B;
+mainArray[2*NUMBER_OF_GRID_POINTS+1:3*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*isothermLoadings[2][1];
 
 # INITIALIZE THE BED TEMPERATURE WITH THE FEED TEMPERATURE
-mainArray[3*NUMBER_OF_GRID_POINTS+1:4*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_FEEDTEMPERATURE/REFERENCE_TEMPERATURE;
+mainArray[3*NUMBER_OF_GRID_POINTS+1:4*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_FEEDTEMPERATURE/REFERENCE_TEMPERATURE;
 
 # INITIALIZE THE COLUMN TEMPERATURE WITH THE FEED TEMPERATURE
-mainArray[4*NUMBER_OF_GRID_POINTS+1:5*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*COLUMN_TEMPERATURE/REFERENCE_TEMPERATURE;
+mainArray[4*NUMBER_OF_GRID_POINTS+1:5*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*COLUMN_TEMPERATURE/REFERENCE_TEMPERATURE;
 
 # INITIALIZE THE COLUMN PRESSURE WITH THE FEED PRESSURE
 mainArray[5*NUMBER_OF_GRID_POINTS+1:6*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_HIGHPRESSURE/REFERENCE_PRESSURE;
 
-mainArray = runAdsorption(mainArray);
+# SOLVE THE ODE
+tspan = (0.0,20.0);
+prob = ODEProblem(runAdsorption,mainArray,tspan)
+sol = solve(prob)
 
-toc()
 if flagPlotIsotherm
 	pressureValues = 0:1e4:1e5;
-	currentConditions = ones(size(pressureValues,1));
-	isothermLoading_A = zeros(size(pressureValues,1));
-	isothermLoading_B = zeros(size(pressureValues,1));
-	for i in 1:size(pressureValues,1)
-		currentConditions = processConditions(pressureValues[i],298.15,0.15);
-		(isothermLoading_A[i],isothermLoading_B[i]) = evaluateLangmuir(materialIsotherm,currentConditions);
+	tempValues = ones(size(pressureValues)).*298.15;
+	molValues = ones(size(pressureValues)).*0.15;
+	isothermLoadings = evaluateLangmuir.(materialIsotherm,pressureValues,tempValues,molValues);
+	isothermLoading_A = zeros(size(pressureValues));
+	isothermLoading_B = zeros(size(pressureValues));
+	for i=1:length(isothermLoading_A)
+		isothermLoading_A[i] = isothermLoadings[i][1];
+		isothermLoading_B[i] = isothermLoadings[i][2];
 	end
-	using PyPlot
-	plot(pressureValues,isothermLoading_A)
-	plot(pressureValues,isothermLoading_B)
+	# gui()
+	# using PyPlot
+	# plot(pressureValues,isothermLoading_A)
+	# plot(pressureValues,isothermLoading_B)
 end
+toc()
