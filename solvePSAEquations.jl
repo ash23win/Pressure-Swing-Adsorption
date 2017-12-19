@@ -1,5 +1,7 @@
 #workspace();
 using DifferentialEquations
+using ODE
+using Sundials
 
 tic();
 
@@ -36,7 +38,7 @@ const PROCESS_AMBIENTTEMPERATURE = 298.15; # Temperature of the ambient atmosphe
 const PROCESS_HIGHPRESSURE = 1e5; # High pressure of the process [Pa]
 const PROCESS_INTPRESSURE = 0.10e5; # Intermediate pressure of the process [Pa]
 const PROCESS_LOWPRESSURE = 0.03e5; # Low pressure of the process [Pa]
-const PROCESS_TIMEASDORPTION = 50; # Time of the adsorption step [s]
+const PROCESS_TIMEADSORPTION = 10; # Time of the adsorption step [s]
 const PROCESS_FEEDVELOCITY = 1; # Feed velocity [m/s]
 const PROCESS_FEEDCONC_A = 0.15; # Feed concentration of component A [-]
 const PROCESS_FEEDCONC_B = 1-PROCESS_FEEDCONC_A; # Feed concentration of component B [-]
@@ -49,8 +51,8 @@ const REFERENCE_TEMPERATURE = PROCESS_FEEDTEMPERATURE; # Reference temperature [
 
 # MIXTURE PROPERTIES
 const GAS_SPECIFICHEATCAPACITY = 1010.6; # Specific heat capacity of the gas mixture [J/kg/K]
-const GAS_massTransferCoeff_A = 0.1; # Mass transfer coeffecient of component A [-]
-const GAS_massTransferCoeff_B = 0.1; # Mass transfer coeffecient of component B [-]
+const GAS_massTransferCoeff_A = 1000; # Mass transfer coeffecient of component A [-]
+const GAS_massTransferCoeff_B = 1000; # Mass transfer coeffecient of component B [-]
 const GAS_MOLECULARDIFFUSIVITY = 1.2955e-5; #Molecular diffusivity of CO2-N2 mixture at 298.15K [m2/s]
 
 # ADSORBENT PROPERTIES
@@ -76,6 +78,7 @@ const COLUMN_MACROPOREDIFFUSIVITY = GAS_MOLECULARDIFFUSIVITY/COLUMN_TORTUOSITY; 
 
 # NON-DIMENSIONAL QUANTITIES
 const NONDIMENSIONAL_TIME = COLUMN_BEDLENGTH/PROCESS_FEEDVELOCITY; # Non-dimensional time [-]
+const NONDIMENSIONAL_TIME_ADSORPTION = PROCESS_TIMEADSORPTION/NONDIMENSIONAL_TIME; # Non-dimensional time of adsorption [-]
 const NONDIMENSIONAL_DELZ = 1/NUMBER_OF_GRID_POINTS; # Length of the cell along spatial discretization [-]
 const NONDIMENSIONAL_PECLETMASS = PROCESS_FEEDVELOCITY*COLUMN_BEDLENGTH/COLUMN_AXIALDISPERSION; # Axial dispersion along the column
 
@@ -120,6 +123,8 @@ delH_B = qSat1_B/qSat_REF*site1H_B + qSat2_B/qSat_REF*site2H_B;
 # Vector of heats of adsorption
 delH = [delH_A, delH_B];
 
+const NONDIMENSIONAL_BEDVOIDAGEFACTOR = UNIVERSAL_GAS_CONSTANT*REFERENCE_TEMPERATURE*qSat_REF*(1-COLUMN_BEDVOIDAGE)/COLUMN_BEDVOIDAGE/REFERENCE_PRESSURE # The idiotic qSat_REF should be defined first. Now it runs cuz the workspace is not cleaned before every run!
+
 # Evaluate the Langmuir Isotherm either single or dual-site Langmuir
 function evaluateLangmuir(materialIsotherm,currentPressure,currentTemperature,currentMoleFraction_A)
 	# Calculate the concetration for species A [mol/m3]
@@ -159,9 +164,9 @@ function evaluateLangmuir(materialIsotherm,currentPressure,currentTemperature,cu
 end
 
 function runAdsorption(t,mainArrayTemp,mainArrayDerivative)
-	nCount = 0;
+	println(t)
 	velocityAdsorption = 1.0;
-	NONDIMENSIONAL_DELT = 1;
+
 	# Evaluate the equilibrium using the isotherm
 	isothermLoadings = evaluateLangmuir.(materialIsotherm,mainArrayTemp[5*NUMBER_OF_GRID_POINTS+1:6*NUMBER_OF_GRID_POINTS]*REFERENCE_PRESSURE,mainArrayTemp[4*NUMBER_OF_GRID_POINTS+1:5*NUMBER_OF_GRID_POINTS]*REFERENCE_TEMPERATURE,mainArrayTemp[1:NUMBER_OF_GRID_POINTS]);
 
@@ -178,8 +183,39 @@ function runAdsorption(t,mainArrayTemp,mainArrayDerivative)
 
 	# Evaluate the Linear Driving Force model for Component B
 	mainArrayDerivative[2*NUMBER_OF_GRID_POINTS+1:3*NUMBER_OF_GRID_POINTS] = GAS_massTransferCoeff_B*(isothermLoading_B - mainArrayTemp[2*NUMBER_OF_GRID_POINTS+1:3*NUMBER_OF_GRID_POINTS]);
+
   #
-	# moleFraction_A_IN = (PROCESS_FEEDCONC_A*velocityAdsorption*NONDIMENSIONAL_PECLETMASS*NONDIMENSIONAL_DELZ/2 + mainArray[1,nCount])/(velocityAdsorption*NONDIMENSIONAL_PECLETMASS*NONDIMENSIONAL_DELZ/2);
+	moleFraction_A_IN = (PROCESS_FEEDCONC_A*velocityAdsorption*NONDIMENSIONAL_PECLETMASS*NONDIMENSIONAL_DELZ/2 + mainArray[1])/(velocityAdsorption*NONDIMENSIONAL_PECLETMASS*NONDIMENSIONAL_DELZ/2);
+
+	moleFraction_FVM = HRFVM(moleFraction_A_IN,mainArrayTemp[1:NUMBER_OF_GRID_POINTS]);
+
+	mainArrayDerivative[1] = 1./NONDIMENSIONAL_PECLETMASS./(NONDIMENSIONAL_DELZ.^2).*((mainArrayTemp[2]-mainArrayTemp[1]) - (mainArrayTemp[1]-moleFraction_A_IN)) - velocityAdsorption./NONDIMENSIONAL_DELZ.*(moleFraction_FVM[1] - moleFraction_A_IN)-NONDIMENSIONAL_BEDVOIDAGEFACTOR.*mainArrayTemp[3*NUMBER_OF_GRID_POINTS+1]./mainArrayTemp[5*NUMBER_OF_GRID_POINTS+1].*mainArrayDerivative[NUMBER_OF_GRID_POINTS+1];
+
+	mainArrayDerivative[2:NUMBER_OF_GRID_POINTS-1] = 1./NONDIMENSIONAL_PECLETMASS./(NONDIMENSIONAL_DELZ.^2).*((mainArrayTemp[3:NUMBER_OF_GRID_POINTS]-mainArrayTemp[2:NUMBER_OF_GRID_POINTS-1]) - (mainArrayTemp[2:NUMBER_OF_GRID_POINTS-1]-mainArrayTemp[1:NUMBER_OF_GRID_POINTS-2])) - velocityAdsorption./NONDIMENSIONAL_DELZ.*(moleFraction_FVM[2:NUMBER_OF_GRID_POINTS-1] - moleFraction_FVM[1:NUMBER_OF_GRID_POINTS-2])-NONDIMENSIONAL_BEDVOIDAGEFACTOR.*mainArrayTemp[3*NUMBER_OF_GRID_POINTS+2:4*NUMBER_OF_GRID_POINTS-1]./mainArrayTemp[5*NUMBER_OF_GRID_POINTS+2:6*NUMBER_OF_GRID_POINTS-1].*mainArrayDerivative[NUMBER_OF_GRID_POINTS+2:2*NUMBER_OF_GRID_POINTS-1];
+
+	mainArrayDerivative[NUMBER_OF_GRID_POINTS] = 1./NONDIMENSIONAL_PECLETMASS./(NONDIMENSIONAL_DELZ.^2).*((0.0) - (mainArrayTemp[NUMBER_OF_GRID_POINTS]-mainArrayTemp[NUMBER_OF_GRID_POINTS-1])) - velocityAdsorption./NONDIMENSIONAL_DELZ.*(moleFraction_FVM[NUMBER_OF_GRID_POINTS] - moleFraction_FVM[NUMBER_OF_GRID_POINTS-1])-NONDIMENSIONAL_BEDVOIDAGEFACTOR.*mainArrayTemp[4*NUMBER_OF_GRID_POINTS]./mainArrayTemp[6*NUMBER_OF_GRID_POINTS].*mainArrayDerivative[2*NUMBER_OF_GRID_POINTS];
+end
+
+function HRFVM(mainVariable_IN,mainVariable)
+	successiveSlopeRatio = zeros(Float64,size(mainVariable,1));
+	mainVariable_FLUXLIMITER = zeros(Float64,size(mainVariable,1)-1);
+	mainVariable_TOTVARDIM = zeros(Float64,size(mainVariable,1)-1);
+	mainVariable_FVM = zeros(Float64,size(mainVariable,1));
+
+	mainVariable_0=2*mainVariable_IN-mainVariable[1];
+
+	successiveSlopeRatio[1] = (mainVariable[1]-mainVariable_0+10e-10)./(mainVariable[2]-mainVariable[1]+10e-10);
+	successiveSlopeRatio[2:NUMBER_OF_GRID_POINTS-1] = (mainVariable[2:NUMBER_OF_GRID_POINTS-1]-mainVariable[1:NUMBER_OF_GRID_POINTS-2]+10e-10)./(mainVariable[3:NUMBER_OF_GRID_POINTS]-mainVariable[2:NUMBER_OF_GRID_POINTS-1]+10e-10);
+
+	mainVariable_FLUXLIMITER = (successiveSlopeRatio+abs(successiveSlopeRatio))./(1+abs(successiveSlopeRatio));
+
+	mainVariable_TOTVARDIM[1:NUMBER_OF_GRID_POINTS-1] = 0.5.*mainVariable_FLUXLIMITER[1:NUMBER_OF_GRID_POINTS-1].*(mainVariable[2:NUMBER_OF_GRID_POINTS]-mainVariable[1:NUMBER_OF_GRID_POINTS-1]);
+
+	mainVariable_FVM[1:NUMBER_OF_GRID_POINTS-1] = mainVariable[1:NUMBER_OF_GRID_POINTS-1]+mainVariable_TOTVARDIM[1:NUMBER_OF_GRID_POINTS-1];
+
+	mainVariable_FVM[NUMBER_OF_GRID_POINTS] = mainVariable[NUMBER_OF_GRID_POINTS];
+
+	return mainVariable_FVM
 end
 
 ###### MAIN FUNCTION ######
@@ -188,7 +224,7 @@ end
 mainArray = zeros(6*NUMBER_OF_GRID_POINTS,1);
 
 # COMPONENT A MOLE FRACTION IN GAS PHASE [1:NUMBER_OF_GRID_POINTS]
-mainArray[0*NUMBER_OF_GRID_POINTS+1:1*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_FEEDCONC_A;
+mainArray[0*NUMBER_OF_GRID_POINTS+1:1*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_INITIALCONC_A;
 
 # INITIALIZE THE SOLID PHASE AT INITIAL CONDITIONS CONDITIONS
 # Evaluate the Langmuir isotherm for the two components
@@ -209,9 +245,9 @@ mainArray[4*NUMBER_OF_GRID_POINTS+1:5*NUMBER_OF_GRID_POINTS] = ones(1,NUMBER_OF_
 mainArray[5*NUMBER_OF_GRID_POINTS+1:6*NUMBER_OF_GRID_POINTS,1] = ones(1,NUMBER_OF_GRID_POINTS).*PROCESS_HIGHPRESSURE/REFERENCE_PRESSURE;
 
 # SOLVE THE ODE
-tspan = (0.0,20.0);
+tspan = (0.0,NONDIMENSIONAL_TIME_ADSORPTION);
 prob = ODEProblem(runAdsorption,mainArray,tspan)
-sol = solve(prob)
+sol = solve(prob,BS3(),reltol=1e-2,abstol=1e-2)
 
 if flagPlotIsotherm
 	pressureValues = 0:1e4:1e5;
